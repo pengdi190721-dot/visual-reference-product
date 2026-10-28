@@ -1,14 +1,21 @@
 {
-  "version": 1,
-  "project": null,
-  "model_name": null,
+  "version": 2,
+  "provider": "meitu",
+  "operation": "design",
   "mode": "creative",
   "generation_authorized": false,
   "summary_shown": false,
   "assets": [
-    {"id": "P01", "role": "product", "path": "产品.png"},
-    {"id": "R01", "role": "style", "path": "对标.png"}
+    {
+      "id": "P01",
+      "role": "product",
+      "path": "产品.png"
+    },
+    {
+      "id": "R01",
+      "role": "style",
+      "path": "对标.png"
+    }
   ],
-  "params": {"count": 1},
-  "prompt": "产品身份只参考 [[P01]]，风格只参考 [[R01]]。请先按本次证据与产品锁定清单补全具体构图、保留项、准确文案和禁止变化项，再调用。"
+  "prompt": "产品身份只参考 [[P01]]，风格只参考 [[R01]]。本次先制作一张完整、美观的视觉方案，不自动追加套图。资料不足时可采用清晰原图裁切或创意详情补图，出图后逐项说明补出了什么、位于哪里、哪些文案待学员核对。保持已知产品及指定人物，未知细节设想不能冒称实拍。提交前由助手填写具体页面类型、构图、中文字形与准确文案、产品锁、抠图边缘及脚部要求。不要为美观随意编造认证或性能数字，不照搬参考品牌。"
 }

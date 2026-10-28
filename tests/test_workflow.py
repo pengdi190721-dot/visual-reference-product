@@ -1,4 +1,3 @@
-import copy
 import json
 from pathlib import Path
 import subprocess
@@ -9,44 +8,42 @@ import zipfile
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import libtv_adapter as adapter
+import meitu_adapter as adapter
 import check_analysis as audit
 import install as installer
 import package as packager
 
 
-def schema():
-    # 人工构造的接口测试数据，不代表线上模型承诺。
-    return {"modality": "image", "schema": {"properties": {
-        "prompt": {"maxLength": 800}, "count": [1, 2, 4],
-        "ratio": {"enum": ["3:4", "1:1"]},
-        "sequential": {"component": "switch", "default": 1},
-        "modeType": {"items": {"image2image": [1, 3]}}
-    }, "rules": [{"require": ["prompt", "image"], "mode": "all"}]}}
-
-
 class FakeCLI:
-    def __init__(self, fail=None):
-        self.calls = []
-        self.fail = fail
+    executable = "designkit"
 
-    def call(self, args, log=None, raw=False):
+    def __init__(self, failure=None):
+        self.calls = []
+        self.failure = failure
+
+    def call(self, args):
         self.calls.append(args)
-        if self.fail == "run" and "--run" in args:
-            raise adapter.AdapterError("模拟提交后断线")
-        if self.fail == "upload" and args[0] == "upload":
-            raise adapter.AdapterError("模拟上传后断线")
-        if self.fail == "create" and args[:2] == ["node", "create"]:
-            return [{"unexpected": "节点可能已创建，但字段变化"}]
-        if args[:2] == ["model", "search"]:
-            return [{"matches": [{"modelName": "测试模型"}]}]
-        if args[0] == "model":
-            return [schema()]
-        if args[0] == "upload":
-            return [{"nodeKey": "asset-" + args[1].split("-")[-1]}]
-        if args[:2] == ["node", "create"]:
-            return [{"newNodeKey": "generated-node"}]
-        return [{"status": "completed"}]
+        if args == ["--version"]:
+            return 0, "1.0.75\n"
+        if args == ["chat", "--help"]:
+            return 0, "--image-file --room-id --prompt"
+        if args == ["auth", "status", "--check"]:
+            return (1, "disconnected") if self.failure == "auth" else (0, "connected\n")
+        if args == ["create-room"]:
+            if self.failure == "room":
+                return 1, "network failure"
+            if self.failure == "room_shape":
+                return 0, '{"unexpected":"unknown"}'
+            return 0, '{"data":{"room_id":"room-1"}}'
+        if args[0] == "chat":
+            if self.failure == "chat":
+                return 1, "uncertain dispatch"
+            if self.failure == "missing_task":
+                return 0, '{"message":"not a task confirmation"}'
+            if self.failure == "wrong_room":
+                return 0, '{"room_id":"other-room","task_id":"task-1"}'
+            return 0, '{"room_id":"room-1","task_id":"task-1"}'
+        raise AssertionError(args)
 
 
 class AdapterTests(unittest.TestCase):
@@ -54,16 +51,14 @@ class AdapterTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        # 仅路径和内容散列测试；不伪称这些字节是真实图像。
-        (self.root / "产品.png").write_bytes(b"synthetic-test-bytes")
-        (self.root / "风格.png").write_bytes(b"other-synthetic-test-bytes")
-        self.job = {"version": 1, "project": "11111111-2222-3333-4444-555555555555",
-                    "model_name": "测试模型", "mode": "creative",
+        # 人工文件头与数据，用于附件映射和散列测试，不作为真实图片视觉验证。
+        for name, data in (("产品.png", b"product"), ("风格.png", b"style")):
+            (self.root / name).write_bytes(b"\x89PNG\r\n\x1a\n" + data)
+        self.job = {"version": 2, "provider": "meitu", "operation": "design", "mode": "creative",
                     "generation_authorized": True, "summary_shown": True,
-                    "assets": [{"id": "P01", "role": "product", "path": "产品.png"},
-                               {"id": "R01", "role": "style", "path": "风格.png"}],
-                    "params": {"count": 1, "ratio": "3:4", "sequential": 0},
-                    "prompt": "保留 [[P01]] 产品，借鉴 [[R01]] 构图。"}
+                    "assets": [{"id":"P01","role":"product","path":"产品.png"},
+                               {"id":"R01","role":"style","path":"风格.png"}],
+                    "prompt":"保留 [[P01]] 产品，借鉴 [[R01]] 构图。"}
 
     def loaded(self):
         path = self.root / "job.json"
@@ -71,125 +66,144 @@ class AdapterTests(unittest.TestCase):
         return adapter.load_job(path)
 
     def test_relative_paths_and_unicode(self):
-        self.assertEqual(self.loaded()["assets"][0]["path"], str((self.root / "产品.png").resolve()))
+        job = self.loaded()
+        self.assertEqual(job["assets"][0]["path"], str((self.root / "产品.png").resolve()))
+        self.assertNotEqual(job["assets"][0]["sha256"], job["assets"][1]["sha256"])
 
-    def test_missing_product_rejected(self):
-        self.job["assets"] = self.job["assets"][1:]
-        self.job["prompt"] = "参考 [[R01]]"
+    def test_old_provider_plan_rejected(self):
+        self.job.update(version=1, provider="libtv")
         with self.assertRaises(adapter.AdapterError):
             self.loaded()
 
-    def test_concept_without_product(self):
-        self.job.update(mode="concept", assets=self.job["assets"][1:], prompt="参考 [[R01]] 做概念图")
-        self.assertEqual(self.loaded()["mode"], "concept")
+    def test_no_legacy_fields_or_room_injection(self):
+        for key in ("model_name", "params", "project", "room_id"):
+            self.job[key] = "unexpected"
+            with self.assertRaises(adapter.AdapterError):
+                self.loaded()
+            del self.job[key]
+
+    def test_missing_product_rejected(self):
+        self.job.update(assets=self.job["assets"][1:], prompt="参考 [[R01]]")
+        with self.assertRaises(adapter.AdapterError):
+            self.loaded()
+
+    def test_concept_without_assets(self):
+        self.job.update(mode="concept", assets=[], prompt="一张概念图")
+        self.assertEqual(self.loaded()["assets"], [])
+
+    def test_cutout_requires_source(self):
+        self.job.update(operation="cutout", assets=self.job["assets"][1:], prompt="参考 [[R01]]")
+        with self.assertRaises(adapter.AdapterError):
+            self.loaded()
+        self.job["assets"][0]["role"] = "source"
+        self.assertEqual(self.loaded()["operation"], "cutout")
 
     def test_missing_file(self):
         self.job["assets"][0]["path"] = "不存在.png"
         with self.assertRaises(adapter.AdapterError):
             self.loaded()
 
-    def test_duplicate_asset_id(self):
-        self.job["assets"][1]["id"] = "P01"
+    def test_bad_image_header(self):
+        (self.root / "产品.png").write_text("not an image")
         with self.assertRaises(adapter.AdapterError):
             self.loaded()
 
-    def test_unmapped_reference(self):
+    def test_duplicate_or_unmapped_reference(self):
+        self.job["assets"][1]["id"] = "P01"
+        with self.assertRaises(adapter.AdapterError):
+            self.loaded()
+        self.job["assets"][1]["id"] = "R01"
         self.job["prompt"] += " [[H01]]"
         with self.assertRaises(adapter.AdapterError):
             self.loaded()
 
-    def test_internal_model_key_not_accepted(self):
-        job = self.loaded()
-        job["model_name"] = "internal-test-key"
+    def test_non_boolean_authorization_rejected(self):
+        self.job["generation_authorized"] = "false"
         with self.assertRaises(adapter.AdapterError):
-            adapter.preflight(FakeCLI(), job)
+            self.loaded()
 
-    def test_invalid_model_params(self):
-        for params in ({"count": 1, "ratio": "9:99", "sequential": 0},
-                       {"count": 1}, {"count": 4, "sequential": 0},
-                       {"count": 1, "sequential": 0, "invented": 1}):
-            with self.subTest(params=params):
-                job = self.loaded()
-                job["params"] = params
-                with self.assertRaises(adapter.AdapterError):
-                    adapter.validate_schema(job, schema(), job["prompt"])
-
-    def test_reference_limit(self):
-        job = self.loaded()
-        job["assets"] *= 2
+    def test_version_numeric_comparison(self):
+        self.assertGreater(adapter.parse_version("1.0.100\n"), (1, 0, 24))
         with self.assertRaises(adapter.AdapterError):
-            adapter.validate_schema(job, schema(), job["prompt"])
+            adapter.parse_version("1.0.75-beta")
 
-    def test_prompt_limit_counts_unicode(self):
-        with self.assertRaises(adapter.AdapterError):
-            adapter.validate_schema(self.loaded(), schema(), "🌂" * 401)
-
-    def test_unknown_schema_fails_closed(self):
-        response = schema()
-        response["schema"]["rules"][0]["newRule"] = True
-        with self.assertRaises(adapter.AdapterError):
-            adapter.validate_schema(self.loaded(), response, "提示词")
-
-    def test_preflight_never_mutates(self):
-        cli = FakeCLI()
-        adapter.preflight(cli, self.loaded())
-        self.assertTrue(all(c[0] == "model" for c in cli.calls))
-
-    def test_unauthorized_never_calls_cli(self):
-        for field in ("generation_authorized", "summary_shown"):
+    def test_unauthorized_no_calls(self):
+        for key in ("generation_authorized", "summary_shown"):
             job = self.loaded()
-            job[field] = False
+            job[key] = False
             cli = FakeCLI()
             with self.assertRaises(adapter.AdapterError):
-                adapter.execute(cli, job, self.root)
+                adapter.submit(cli, job, self.root / key)
             self.assertEqual(cli.calls, [])
 
-    def test_exactly_one_run_and_correct_roles(self):
-        job = self.loaded()
+    def test_doctor_never_mutates(self):
         cli = FakeCLI()
-        adapter.execute(cli, job, self.root)
-        adapter.execute(cli, job, self.root)
-        self.assertEqual(sum("--run" in c for c in cli.calls), 1)
-        creation = next(c for c in cli.calls if c[:2] == ["node", "create"])
-        prompt = creation[creation.index("--prompt") + 1]
-        self.assertIn("{{Node asset-P01}}", prompt)
-        self.assertIn("{{Node asset-R01}}", prompt)
-        self.assertEqual(creation.count("--left"), 2)
-        self.assertTrue(all("-p" in c for c in cli.calls if c[0] in ("upload", "node")))
+        self.assertEqual(adapter.doctor(cli, True)["auth"], "connected")
+        self.assertEqual(cli.calls, [["--version"], ["chat", "--help"], ["auth", "status", "--check"]])
 
-    def test_unknown_remote_state_never_retried(self):
-        for failure in ("upload", "create", "run"):
+    def test_disconnected_never_uploads(self):
+        cli = FakeCLI("auth")
+        with self.assertRaises(adapter.AdapterError):
+            adapter.submit(cli, self.loaded(), self.root / "run")
+        self.assertFalse(any(c[0] in ("create-room", "chat") and "--help" not in c for c in cli.calls))
+        self.assertFalse((self.root / "run/state.json").exists())
+
+    def test_once_and_ordered_roles(self):
+        job, cli = self.loaded(), FakeCLI()
+        folder = self.root / "run"
+        result = adapter.submit(cli, job, folder)
+        self.assertEqual(result["state"]["phase"], "submitted")
+        adapter.submit(cli, job, folder)
+        calls = [c for c in cli.calls if c[0] == "chat" and "--help" not in c]
+        self.assertEqual(len(calls), 1)
+        call = calls[0]
+        self.assertEqual(call[call.index("--image-file")+1:], [a["path"] for a in job["assets"]])
+        prompt = call[call.index("--prompt")+1]
+        self.assertIn("附件1（P01，产品身份）", prompt)
+        self.assertIn("附件2（R01，仅参考风格）", prompt)
+        self.assertEqual((folder / "prompt.txt").read_text(), prompt)
+        self.assertEqual(result["next_argv"], ["designkit", "history-detail", "--room-id", "room-1", "--watch"])
+
+    def test_uncertain_never_retries(self):
+        for failure in ("room", "room_shape", "chat", "missing_task", "wrong_room"):
             with self.subTest(failure=failure):
-                directory = self.root / failure
-                directory.mkdir()
-                cli = FakeCLI(failure)
+                folder, cli = self.root / failure, FakeCLI(failure)
                 with self.assertRaises(adapter.AdapterError):
-                    adapter.execute(cli, self.loaded(), directory)
+                    adapter.submit(cli, self.loaded(), folder)
                 count = len(cli.calls)
                 with self.assertRaises(adapter.AdapterError):
-                    adapter.execute(cli, self.loaded(), directory)
+                    adapter.submit(cli, self.loaded(), folder)
                 self.assertEqual(len(cli.calls), count)
 
-    def test_changed_material_blocks_resume(self):
+    def test_changed_asset_blocks_reuse(self):
         cli = FakeCLI()
-        adapter.execute(cli, self.loaded(), self.root)
-        (self.root / "产品.png").write_bytes(b"changed")
+        adapter.submit(cli, self.loaded(), self.root / "run")
+        (self.root / "产品.png").write_bytes(b"\x89PNG\r\n\x1a\nchanged")
         with self.assertRaises(adapter.AdapterError):
-            adapter.execute(cli, self.loaded(), self.root)
+            adapter.submit(cli, self.loaded(), self.root / "run")
 
-    def test_subprocess_treats_prompt_as_data(self):
+    def test_concurrent_lock_blocks(self):
+        folder = self.root / "run"
+        folder.mkdir()
+        (folder / ".submit.lock").touch()
+        cli = FakeCLI()
+        with self.assertRaises(adapter.AdapterError):
+            adapter.submit(cli, self.loaded(), folder)
+        self.assertEqual(cli.calls, [])
+
+    def test_subprocess_keeps_prompt_as_data(self):
         dangerous = "提示 `echo x` $(touch injected) \" 换行\n内容"
-        with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, '{"ok":true}')) as run:
-            adapter.CLI("libtv", self.root).call(["node", "abc", "--prompt", dangerous])
+        with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "{}")) as run:
+            adapter.CLI("designkit").call(["chat", "--prompt", dangerous])
             args, kwargs = run.call_args
             self.assertEqual(args[0][-1], dangerous)
             self.assertFalse(kwargs.get("shell", False))
             self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
 
-    def test_ndjson_and_unique_node(self):
-        self.assertEqual(len(adapter.parse_output('{"a":1}\n{"b":2}\n')), 2)
+    def test_unique_return_id_and_ndjson(self):
+        data = adapter.parse_output('{"room_id":"one"}\n{"room_id":"two"}')
         with self.assertRaises(adapter.AdapterError):
-            adapter.node_key([{"nodeKey": "one"}, {"nodeKey": "two"}])
+            adapter.unique_id(data, "room_id")
 
 
 def evidence():
@@ -204,6 +218,51 @@ def evidence():
 
 
 class EvidenceTests(unittest.TestCase):
+    def draft(self):
+        data = evidence()
+        data["draft_elements"] = [{"id": "D01", "origin": "generated",
+            "location": "右下收纳小图", "content": "未见实拍的收纳形态",
+            "invented_or_unverified": "折叠外观由 AI 设想", "confirmation_status": "pending",
+            "draft_only": True}]
+        return data
+
+    def test_disclosed_detail_draft_allowed(self):
+        self.assertEqual(audit.validate(self.draft()), [])
+
+    def test_unconfirmed_detail_cannot_be_ready(self):
+        data = self.draft()
+        data["delivery_status"] = "ready"
+        self.assertTrue(audit.validate(data))
+
+    def test_confirmation_needs_evidence_keeps_origin(self):
+        data = self.draft()
+        data["draft_elements"][0].update(confirmation_status="confirmed", draft_only=False)
+        data["delivery_status"] = "ready"
+        self.assertTrue(audit.validate(data))
+        data["draft_elements"][0]["confirmation_ref"] = "用户消息：收纳形态与实物一致"
+        self.assertEqual(audit.validate(data), [])
+        self.assertEqual(data["draft_elements"][0]["origin"], "generated")
+
+    def test_crop_needs_real_product_and_region(self):
+        data = self.draft()
+        item = data["draft_elements"][0]
+        item.update(origin="crop", source_ref="R01", bbox=[0, 0, 1, 1])
+        self.assertTrue(audit.validate(data))
+        data["images"].append({"id": "P01", "role": "product", "path": "原图.png", "status": "inspected"})
+        item["source_ref"] = "P01"
+        self.assertEqual(audit.validate(data), [])
+        item["bbox"] = [0.5, 0.5, 0.2, 1]
+        self.assertTrue(audit.validate(data))
+
+    def test_rejected_detail_must_leave_current_delivery(self):
+        data = self.draft()
+        item = data["draft_elements"][0]
+        item.update(confirmation_status="rejected")
+        self.assertTrue(audit.validate(data))
+        item["included_in_current"] = False
+        data["delivery_status"] = "ready"
+        self.assertEqual(audit.validate(data), [])
+
     def test_complete_record(self):
         self.assertEqual(audit.validate(evidence()), [])
 

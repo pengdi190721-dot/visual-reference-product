@@ -1,6 +1,6 @@
 interface:
   display_name: "灵感映像｜对标生图助手"
-  short_description: "只上传对标图即可开始，逐图拆解，重视中文排版，经 LibTV 生图并检查完整页面。"
+  short_description: "只上传对标图即可开始，逐图拆解，重视中文排版，经美图设计室处理，检查抠图、人物构图和完整页面。"
   default_prompt: "让 $visual-reference-product 从上传的图片开始自动解析，并逐步引导后续产品生图。"
 policy:
   allow_implicit_invocation: true

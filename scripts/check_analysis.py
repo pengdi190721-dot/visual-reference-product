@@ -116,6 +116,47 @@ def validate(data):
             check(fact.get("category") == "appearance", "图片外观不能证明规格、材料成分或性能")
         if source == "creative":
             check(fact.get("category") == "scene" and not fact.get("locked_fact"), "创意设定不能成为锁定产品事实")
+    # 视觉方案中的创意补图独立记录，不升级为 product_facts。
+    drafts = data.get("draft_elements", [])
+    check(isinstance(drafts, list), "草稿元素应为列表")
+    if not isinstance(drafts, list):
+        return errors
+    draft_ids = set()
+    for item in drafts:
+        if not isinstance(item, dict):
+            errors.append("草稿元素应为对象")
+            continue
+        key = item.get("id")
+        valid_id = isinstance(key, str) and bool(key) and key not in draft_ids
+        check(valid_id, "草稿元素编号须非空且唯一")
+        if isinstance(key, str):
+            draft_ids.add(key)
+        origin = item.get("origin")
+        check(origin in ("crop", "generated", "suggested_copy"), f"{key} 草稿来源错误")
+        check(bool(item.get("location")) and bool(item.get("content")), f"{key} 缺成图位置或内容")
+        status = item.get("confirmation_status")
+        check(status in ("pending", "confirmed", "rejected"), f"{key} 确认状态错误")
+        if status == "confirmed":
+            check(bool(item.get("confirmation_ref")), f"{key} 确认必须有用户核对依据")
+        if origin == "crop":
+            source = image_map.get(item.get("source_ref"), {})
+            check(source.get("role") == "product" and source.get("status") == "inspected", f"{key} 裁切须引用已观察产品图")
+            box = item.get("bbox")
+            check(isinstance(box, list) and len(box) == 4
+                  and all(type(v) in (int, float) and 0 <= v <= 1 for v in box)
+                  and box[0] < box[2] and box[1] < box[3], f"{key} 缺有效裁切区域")
+        elif origin in ("generated", "suggested_copy"):
+            check(bool(item.get("invented_or_unverified")), f"{key} 须明确创意补充/未核实的内容")
+            if status != "confirmed":
+                check(item.get("draft_only") is True, f"{key} 未确认创意只能作为草稿")
+        if status == "rejected":
+            check(item.get("included_in_current") is False, f"{key} 已否定内容不能继续用于当前交付")
+    delivery = data.get("delivery_status", "draft")
+    check(delivery in ("draft", "ready"), "交付状态应为 draft 或 ready")
+    if delivery == "ready":
+        check(all(x.get("confirmation_status") == "confirmed"
+                  or x.get("included_in_current") is False for x in drafts if isinstance(x, dict)),
+              "仍有使用中的未确认细节/文案，不能标为事实已确认交付")
     return errors
 
 
