@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import check_task
 
 
 class AdapterError(ValueError):
@@ -72,8 +73,8 @@ def doctor(cli, auth=False):
 def load_job(path):
     path = Path(path).resolve()
     job = read(path)
-    require(isinstance(job, dict) and job.get("version") == 2 and job.get("provider") == "meitu",
-            "只接受本版美图计划；旧版画布/模型计划不能直接执行。")
+    require(isinstance(job, dict) and job.get("version") == 3 and job.get("provider") == "meitu",
+            "只接受第 3 版美图计划；旧计划须补齐当前需求清单，不能直接重新提交。")
     require(job.get("operation") in ("design", "cutout"), "operation 必须为 design 或 cutout。")
     require(job.get("mode") in ("precise", "creative", "concept"), "未知创作模式。")
     for key in ("generation_authorized", "summary_shown"):
@@ -107,6 +108,16 @@ def load_job(path):
         require(any(a["role"] in ("product", "person", "source") for a in assets), "抠图需要原始主体图片。")
     elif job["mode"] != "concept":
         require(any(a["role"] == "product" for a in assets), "非概念设计需要真实产品图。")
+    require(isinstance(job.get("contract"), str) and job["contract"].strip(), "缺少本次需求清单 contract。")
+    job["contract"] = str((path.parent / job["contract"]).resolve())
+    try:
+        task = check_task.load_contract(job["contract"])
+        instructions = check_task.plan_instructions(task, job.get("output_ids"), seen)
+    except (check_task.TaskError, OSError, ValueError, TypeError, KeyError) as exc:
+        raise AdapterError("需求检查未通过：" + str(exc)) from exc
+    job["contract_sha256"] = check_task.digest(job["contract"])
+    job["task_snapshot"] = task
+    job["required_instructions"] = instructions
     return job
 
 
@@ -118,7 +129,7 @@ def rendered_prompt(job):
         name = f"附件{index}（{asset['id']}，{labels[asset['role']]}）"
         prompt = prompt.replace("[[" + asset["id"] + "]]", name)
         mapping.append(name)
-    return "素材按实际附件顺序如下：" + ("；".join(mapping) or "无，文字概念图") + "。\n" + prompt
+    return "素材按实际附件顺序如下：" + ("；".join(mapping) or "无，文字概念图") + "。\n" + prompt + "\n\n" + job["required_instructions"]
 
 
 def parse_output(text):
@@ -175,6 +186,14 @@ def locked(folder):
 def submit(cli, job, folder):
     require(job["generation_authorized"] is True and job["summary_shown"] is True,
             "没有实际生成意图或未展示摘要，不能上传/提交。")
+    try:
+        task = check_task.load_contract(job["contract"])
+        expected = check_task.plan_instructions(task, job.get("output_ids"), [a["id"] for a in job["assets"]])
+        require(check_task.digest(job["contract"]) == job.get("contract_sha256")
+                and task == job.get("task_snapshot") and expected == job.get("required_instructions"),
+                "需求或已解析计划发生变化，须重新检查后提交。")
+    except (check_task.TaskError, OSError, ValueError, TypeError, KeyError) as exc:
+        raise AdapterError("提交前需求检查未通过：" + str(exc)) from exc
     folder = Path(folder)
     with locked(folder):
         fingerprint = hashlib.sha256(dump(job).encode()).hexdigest()

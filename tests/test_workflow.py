@@ -54,11 +54,14 @@ class AdapterTests(unittest.TestCase):
         # 人工文件头与数据，用于附件映射和散列测试，不作为真实图片视觉验证。
         for name, data in (("产品.png", b"product"), ("风格.png", b"style")):
             (self.root / name).write_bytes(b"\x89PNG\r\n\x1a\n" + data)
-        self.job = {"version": 2, "provider": "meitu", "operation": "design", "mode": "creative",
+        self.job = {"version": 3, "contract": "task.json", "output_ids": ["O01"], "provider": "meitu", "operation": "design", "mode": "creative",
                     "generation_authorized": True, "summary_shown": True,
                     "assets": [{"id":"P01","role":"product","path":"产品.png"},
                                {"id":"R01","role":"style","path":"风格.png"}],
                     "prompt":"保留 [[P01]] 产品，借鉴 [[R01]] 构图。"}
+
+        from test_task import example_task
+        (self.root / "task.json").write_text(json.dumps(example_task()), encoding="utf-8")
 
     def loaded(self):
         path = self.root / "job.json"
@@ -74,6 +77,44 @@ class AdapterTests(unittest.TestCase):
         self.job.update(version=1, provider="libtv")
         with self.assertRaises(adapter.AdapterError):
             self.loaded()
+
+    def test_previous_meitu_schema_cannot_bypass_contract(self):
+        self.job["version"] = 2
+        with self.assertRaises(adapter.AdapterError):
+            self.loaded()
+
+    def test_missing_contract_stops_before_execution(self):
+        del self.job["contract"]
+        with self.assertRaises(adapter.AdapterError):
+            self.loaded()
+
+    def test_effective_requirement_is_sent_in_actual_prompt(self):
+        job, cli = self.loaded(), FakeCLI()
+        adapter.submit(cli, job, self.root / "run")
+        call = next(c for c in cli.calls if c[0] == "chat" and "--prompt" in c)
+        actual = call[call.index("--prompt") + 1]
+        self.assertIn(job["required_instructions"], actual)
+        self.assertIn("D01", actual)
+        self.assertIn("标题旁放爱心", actual)
+
+    def test_missing_style_required_by_contract_rejected(self):
+        path = self.root / "task.json"
+        data = json.loads(path.read_text())
+        data["requirements"][0]["required_assets"] = ["R01"]
+        path.write_text(json.dumps(data))
+        self.job.update(assets=self.job["assets"][:1], prompt="保留 [[P01]]")
+        with self.assertRaises(adapter.AdapterError):
+            self.loaded()
+
+    def test_contract_changed_after_plan_stops_before_remote_calls(self):
+        job, cli = self.loaded(), FakeCLI()
+        path = self.root / "task.json"
+        data = json.loads(path.read_text())
+        data["requirements"][0]["implementation"] = "改为另一处位置"
+        path.write_text(json.dumps(data))
+        with self.assertRaises(adapter.AdapterError):
+            adapter.submit(cli, job, self.root / "run")
+        self.assertEqual(cli.calls, [])
 
     def test_no_legacy_fields_or_room_injection(self):
         for key in ("model_name", "params", "project", "room_id"):

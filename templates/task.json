@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "task_id": "example-replace-with-task-id",
+  "revision": 1,
+  "previous": null,
+  "questions": [
+    {
+      "id": "product",
+      "state": "unasked"
+    }
+  ],
+  "outputs": [
+    {
+      "id": "O01",
+      "state": "active",
+      "spec": "填写用户约定的页型、比例及本页用途；每个实际文件单独编号",
+      "source": {
+        "ref": "",
+        "quote": ""
+      }
+    }
+  ],
+  "requirements": [
+    {
+      "id": "D01",
+      "state": "active",
+      "kind": "identity",
+      "text": "填写本次产品锁定项",
+      "source": {
+        "ref": "",
+        "quote": ""
+      },
+      "outputs": [
+        "O01"
+      ],
+      "required_assets": [
+        "P01"
+      ],
+      "implementation": "填写成图位置和检查方法"
+    },
+    {
+      "id": "D02",
+      "state": "active",
+      "kind": "visual",
+      "text": "填写本次关键风格与构图关系，不要只写日系、好看",
+      "source": {
+        "ref": "",
+        "quote": ""
+      },
+      "outputs": [
+        "O01"
+      ],
+      "required_assets": [
+        "R01"
+      ],
+      "implementation": "填写人物、主产品、细节图、中文标题及装饰之间的关系"
+    }
+  ],
+  "changes": {}
+}
