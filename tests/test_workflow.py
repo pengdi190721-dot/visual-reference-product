@@ -285,6 +285,8 @@ class InstallTests(unittest.TestCase):
             for name in packager.ROOT_FILES:
                 (root / name).write_text("测试", encoding="utf-8")
             (root / ".env").write_text("PRIVATE_DATA", encoding="utf-8")
+            (root / ".gitignore").write_text("private/", encoding="utf-8")
+            (root / "LICENSE").write_text("旧版无扩展名文件", encoding="utf-8")
             (root / "private").mkdir()
             (root / "private" / "客户.png").write_bytes(b"private")
             (root / "scripts").mkdir()
@@ -296,6 +298,12 @@ class InstallTests(unittest.TestCase):
                 self.assertEqual(len(names), count)
                 self.assertFalse(any(".env" in n or "private" in n for n in names))
                 self.assertIn("visual-reference-product/SKILL.md", names)
+                self.assertNotIn("visual-reference-product/.gitignore", names)
+                self.assertNotIn("visual-reference-product/LICENSE", names)
+                self.assertEqual(archive.read("visual-reference-product/LICENSE.md"),
+                                 (root / "LICENSE.md").read_bytes())
+                self.assertTrue(all(Path(n).suffix in {".md", ".yaml", ".json", ".py"}
+                                    and not Path(n).name.startswith(".") for n in names))
 
     def test_package_reproducible(self):
         with tempfile.TemporaryDirectory() as directory:

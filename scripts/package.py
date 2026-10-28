@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 import zipfile
 
-ROOT_FILES = {"SKILL.md", "README.md", "LICENSE", ".gitignore", "VALIDATION.md"}
+# 仓库管理文件不进入 WorkBuddy 导入包；许可证使用可识别的文档扩展名。
+ROOT_FILES = {"SKILL.md", "README.md", "LICENSE.md", "VALIDATION.md"}
 DIRECTORIES = {"agents": {".yaml"}, "references": {".md"}, "templates": {".md", ".json"},
                "scripts": {".py"}, "tests": {".py", ".md"}}
 
