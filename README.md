@@ -21,6 +21,8 @@
 
 ## 安装到 WorkBuddy
 
+[下载 0.2.0 完整安装包](https://github.com/pengdi190721-dot/visual-reference-product/releases/download/v0.2.0/visual-reference-product-0.2.0.zip)。
+
 推荐用界面导入：打开「专家·技能·连接器」→「技能」→「添加技能」→「上传技能」，选完整技能压缩包。入口以当前版本为准，见 [WorkBuddy 官方技能说明](https://www.codebuddy.cn/docs/workbuddy/From-Beginner-to-Expert-Guide/Function-Description/Skills-Market)。不要只上传 `SKILL.md` 而漏掉配套文件。
 
 也可以在解压后的技能目录运行本地安装脚本：
