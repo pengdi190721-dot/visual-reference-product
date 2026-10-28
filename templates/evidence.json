@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "images": [
+    {"id": "R01", "role": "style", "path": "对标.png", "status": "pending", "reason": "尚未实际看图", "duplicate_of": null}
+  ],
+  "claims": [],
+  "groups": [],
+  "unresolved_images": ["R01"],
+  "transfers": [],
+  "product_facts": []
+}
